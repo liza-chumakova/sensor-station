@@ -21,12 +21,20 @@
 *    OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 *    THE SOFTWARE.
 */
-#include <BMP085.h>
-#include <Wire.h>
+
 #include <RTC.h>
-#include <Wire.h> 
-#include <LiquidCrystal_I2C.h>
+#include <Wire.h>
+#include <Wire.h>
+#include <BMP085.h>
 #include <ezButton.h>
+#include <TroykaDHT.h>
+#include <RadSensBoard.h>
+#include <MQUnifiedsensor.h>
+#include <LiquidCrystal_I2C.h>
+
+#define RatioMQ135CleanAir 3.6
+
+//MQUnifiedsensor m_airqmeter("Arduino UNO", A0, "MQ-135");
 
 const int Key_1 = A1;
 
@@ -46,12 +54,17 @@ public:
 
 protected:
   static DS3231 m_rtc;
+  static DHT m_hummeter;
   static BMP085 m_barometer;
-  static //объявление жатчика для остального
+//  static RadSensBoard m_radmeter;
+  static MQUnifiedsensor m_airqmeter;
 };
+
 DS3231 SensorInterface::m_rtc;
 BMP085 SensorInterface::m_barometer;
-//тоже 
+//RadSensBoard SensorInterface::m_radmeter;
+DHT SensorInterface::m_hummeter(A2, DHT11);
+MQUnifiedsensor SensorInterface::m_airqmeter("Arduino UNO", 5, 10, A0, "MQ-135");
 
 class PressureSensor : public SensorInterface
 {
@@ -98,7 +111,8 @@ private:
     float m_time;
 };
 
-/*
+
+#if 0
 class RadiationSensor : public SensorInterface
 {
 public:
@@ -109,8 +123,9 @@ public:
 private:
     float m_radiation;
 };
+#endif
 
-class COSensor : public SensorInterface
+class AirqSensor : public SensorInterface
 {
 public:
     void update();
@@ -118,13 +133,13 @@ public:
     void handlekey();
 
 private:
-    float m_CO;
+    float m_airq;
 };
-*/
+
 
 Time TheTime;
 
-//COSensor TheCOSensor;
+AirqSensor TheAirqSensor;
 
 HumiditySensor TheHumiditySensor;
 
@@ -138,18 +153,23 @@ static SensorInterface *TheActiveSensor = NULL;
 
 void setup()
 {
-  pinMode(Key_1, INPUT);
-  Button1.setDebounceTime(50);
-  
-  TheActiveSensor = &TheTime;
-
   Serial.begin(9600);
   while (!Serial);
+//  Serial.println("Starting...");
+
+  pinMode(Key_1, INPUT);
+  Button1.setDebounceTime(50);
+
+  TheActiveSensor = &TheTime;
+
 
   lcd.init();// initialize the lcd 
   lcd.backlight();
 
+//  Serial.println("About to init...");
   SensorInterface::init();
+
+//  Serial.print("Calibrating please wait.");
 }
 
 void loop()
@@ -173,7 +193,30 @@ void loop()
 void SensorInterface::init()
 {
   m_barometer.init();
-  //сделать тоже для других датчиков
+//  m_radmeter.init();
+  m_hummeter.begin();
+
+  m_airqmeter.setA(102.2);
+  m_airqmeter.setB(-2.473);
+  m_airqmeter.init();
+
+  float calcR0 = 0;
+  for(int i = 1; i<=10; i ++)
+  {
+    m_airqmeter.update(); // Update data, the arduino will read the voltage from the analog pin
+    calcR0 += m_airqmeter.calibrate(RatioMQ135CleanAir);
+    Serial.print(".");
+//    Serial.print("Value: ");
+//    Serial.println();
+  }
+  m_airqmeter.setR0(calcR0/10);
+
+  Serial.println("  done!.");
+  
+//  if(isinf(calcR0)) {Serial.println("Error1");}
+//  if(calcR0 == 0){Serial.println("Error2");}
+  /*****************************  MQ CAlibration ********************************************/ 
+//  m_airqmeter.serialDebug(true);
   /*
   m_rtc.begin();
   m_rtc.setHourMode(CLOCK_H24);
@@ -212,15 +255,20 @@ void Time::print()
   lcd.print("Time");
   lcd.setCursor(0,1);
   printtime(m_rtc.getHours());
+//  Serial.print(m_rtc.getHours());
+//  Serial.print(":");
   lcd.print(":");
   printtime(m_rtc.getMinutes());
+//  Serial.print(m_rtc.getMinutes());
+//  Serial.print(":");
   lcd.print(":");
   printtime(m_rtc.getSeconds());
+//  Serial.println(m_rtc.getSeconds());
 }
 
 void Time::handlekey()
 {
-  Serial.println("In time sensor");
+//  Serial.println("In time sensor");
   TheActiveSensor = &TheTemperatureSensor;
   m_next_update = 0;
 }
@@ -236,21 +284,24 @@ void TemperatureSensor::print()
   lcd.clear();
   lcd.setCursor(0,0);
   lcd.print("Temperature");
+//  Serial.println("Temperature");
   lcd.setCursor(0,1);
   lcd.print(m_temperature, 1);
+//  Serial.println(m_temperature, 1);
   lcd.print(" C");
 }
 
 void TemperatureSensor::handlekey()
 {
-  Serial.println("In temperature sensor");
+//  Serial.println("In temperature sensor");
   TheActiveSensor = &TheHumiditySensor;
   m_next_update = 0;
 }
 
 void HumiditySensor::update()
 {
-  this->m_humidity = 50;
+  m_hummeter.read();
+  m_humidity = m_hummeter.getHumidity();
 }
 
 void HumiditySensor::print()
@@ -258,8 +309,10 @@ void HumiditySensor::print()
   lcd.clear();
   lcd.setCursor(0,0);
   lcd.print("Humidity");
+  Serial.println("Humidity");
   lcd.setCursor(0,1);
   lcd.print(m_humidity, 0);
+  Serial.println(m_humidity);
   lcd.print(" %");
 }
 
@@ -272,7 +325,7 @@ void HumiditySensor::handlekey()
 
 void PressureSensor::update()
 {
-  m_barometer.bmp085GetTemperature(m_barometer.bmp085ReadUT()); //Get the temperature, bmp085ReadUT MUST be called first
+  m_barometer.bmp085GetTemperature(m_barometer.bmp085ReadUT());
   m_pressure = m_barometer.bmp085GetPressure(m_barometer.bmp085ReadUP())/133.32239f;
 }
 
@@ -281,22 +334,25 @@ void PressureSensor::print()
   lcd.clear();
   lcd.setCursor(0,0);
   lcd.print("Pressure");
+  //Serial.println("Pressure");
   lcd.setCursor(0,1);
   lcd.print(m_pressure, 1);
+  //Serial.println(m_pressure, 1);
   lcd.print(" Pa");
 }
 
 void PressureSensor::handlekey()
 {
   Serial.println("In pressure sensor");
-  TheActiveSensor = &TheTime;
+  TheActiveSensor = &TheAirqSensor;
   m_next_update = 0;
 }
 
-/*
+#if 0
 void RadiationSensor::update()
 {
-  //берем данные
+  m_radmeter.getRadiationLevelStatic();
+  m_radiation = m_radmeter.getRadiationLevelStatic();
 }
 
 void RadiationSensor::print()
@@ -304,37 +360,43 @@ void RadiationSensor::print()
   lcd.clear();
   lcd.setCursor(0,0);
   lcd.print("Radiation");
+  Serial.println("Radiation");
   lcd.setCursor(0,1);
   lcd.print(m_radiation, 1);
-  lcd.print(" Mz");
+  Serial.println(m_radiation, 1);
+  lcd.print(" mR/h");
 }
 
 void RadiationSensor::handlekey()
 {
   Serial.println("In radiation sensor");
-  TheActiveSensor = &TheCOSensor;
+  TheActiveSensor = &TheAirqSensor;
   m_next_update = 0;
 }
+#endif
 
-void COSensor::update()
+void AirqSensor::update()
 {
-  //берем данные
+  m_airqmeter.update(); // Update data, the arduino will read the voltage from the analog pin
+//  m_airqmeter.serialDebug();
+  m_airq = m_airqmeter.readSensor(); // Sensor will read PPM concentration using the model, a and b values set previously or from the setup
 }
 
-void COSensor::print()
+void AirqSensor::print()
 {
   lcd.clear();
   lcd.setCursor(0,0);
-  lcd.print("CO");
+  lcd.print("Air Quality");
+//  Serial.println("Air Quality");
   lcd.setCursor(0,1);
-  lcd.print(m_CO, 1);
-  lcd.print(" ppn");
+  lcd.print(m_airq, 1);
+//  Serial.println(m_airq, 4);
+  lcd.print(" ppm");
 }
 
-void COSensor::handlekey()
+void AirqSensor::handlekey()
 {
-  Serial.println("In CO sensor");
-  TheActiveSensor = &TheCOSensor;
+//  Serial.println("In CO sensor");
+  TheActiveSensor = &TheTime;
   m_next_update = 0;
 }
-*/
